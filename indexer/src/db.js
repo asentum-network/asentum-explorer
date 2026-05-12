@@ -149,6 +149,29 @@ export function statsForAddress(db, address) {
   return { sent, received, contractsCreated: created };
 }
 
+export function recentTxs(db, limit = 25) {
+  const n = Math.min(100, Math.max(1, limit));
+  return db.prepare(`
+    SELECT * FROM txs
+    ORDER BY block_number DESC, hash DESC
+    LIMIT ?
+  `).all(n);
+}
+
+export function globalStats(db) {
+  const totalTxs = db.prepare('SELECT COUNT(*) AS n FROM txs').get().n;
+  const distinctAddresses = db.prepare(
+    'SELECT COUNT(DISTINCT address) AS n FROM address_txs'
+  ).get().n;
+  const contractsCreated = db.prepare(
+    "SELECT COUNT(*) AS n FROM address_txs WHERE role = 'created'"
+  ).get().n;
+  const blocksWithTxs = db.prepare(
+    'SELECT COUNT(DISTINCT block_number) AS n FROM txs'
+  ).get().n;
+  return { totalTxs, distinctAddresses, contractsCreated, blocksWithTxs };
+}
+
 export function indexHealth(db) {
   const lastIndexed = parseInt(getMeta(db, 'last_indexed_block') || '-1', 10);
   const totalTxs = db.prepare('SELECT COUNT(*) AS n FROM txs').get().n;

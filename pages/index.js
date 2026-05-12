@@ -1,5 +1,6 @@
-// asentum-explorer · Homepage. Live chain stats, recent blocks list,
-// and the latest few transactions across those blocks.
+// asentum-explorer · Homepage. Live chain stats sourced from RPC + the
+// /validators node endpoint + the local indexer, plus side-by-side feeds
+// of recent blocks and recent transactions.
 //
 // milkie · 2026
 
@@ -7,16 +8,22 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Layout from '@/components/Layout';
 import StatCard from '@/components/StatCard';
-import { getBlockNumber, getBlockByNumber, getValidators, CHAIN_NAME } from '@/lib/rpc';
-import { hexToNumber, hexToBigInt, formatAse, shortHash, relativeTime } from '@/lib/format';
+import { getBlockNumber, getBlockByNumber, getValidators, getChainInfo, CHAIN_NAME, CHAIN_ID } from '@/lib/rpc';
+import { hexToNumber, formatAse, shortHash, relativeTime } from '@/lib/format';
 
-const RECENT_BLOCKS = 12;
+const RECENT_BLOCKS = 13;
+const RECENT_TXS = 13;
+const ONE_ASE = 10n ** 18n;
 
 export default function Home() {
   const [latest, setLatest] = useState(null);
   const [blocks, setBlocks] = useState([]);
-  const [validatorCount, setValidatorCount] = useState(null);
-  const [recentTxs, setRecentTxs] = useState([]);
+  const [validators, setValidators] = useState(null);
+  const [validatorMeta, setValidatorMeta] = useState({});
+  const [chainMeta, setChainMeta] = useState(null);
+  const [indexerStats, setIndexerStats] = useState(null);
+  const [indexerHealth, setIndexerHealth] = useState(null);
+  const [recentTxs, setRecentTxs] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -24,41 +31,58 @@ export default function Home() {
     let interval;
 
     const refresh = async () => {
+      // Chain stats from RPC.
       try {
         const head = await getBlockNumber();
         if (cancelled) return;
         setLatest(head);
-
         const start = Math.max(0, head - RECENT_BLOCKS + 1);
         const numbers = [];
         for (let n = head; n >= start; n--) numbers.push(n);
-        const fetched = await Promise.all(numbers.map((n) => getBlockByNumber(n, true).catch(() => null)));
+        const fetched = await Promise.all(numbers.map((n) => getBlockByNumber(n, false).catch(() => null)));
         if (cancelled) return;
-        const valid = fetched.filter(Boolean);
-        setBlocks(valid);
-
-        // Flatten recent txs across the fetched blocks, capped at 8.
-        const txs = [];
-        for (const b of valid) {
-          for (const tx of (b.transactions || [])) {
-            if (typeof tx === 'object') {
-              txs.push({ ...tx, blockNumber: b.number, blockTimestamp: b.timestamp });
-            }
-          }
-          if (txs.length >= 8) break;
-        }
-        setRecentTxs(txs.slice(0, 8));
+        setBlocks(fetched.filter(Boolean));
         setError(null);
       } catch (err) {
         if (!cancelled) setError(err.message);
       }
 
+      // Validators (count, bonded total).
       try {
         const v = await getValidators();
         if (cancelled) return;
-        if (Array.isArray(v?.validators)) setValidatorCount(v.validators.length);
-        else if (Array.isArray(v)) setValidatorCount(v.length);
-      } catch { /* optional endpoint, ignore failure */ }
+        const list = Array.isArray(v?.validators) ? v.validators : Array.isArray(v) ? v : [];
+        setValidators(list);
+        let totalBonded = 0n;
+        for (const x of list) {
+          const stake = x.stake || x.bondedStake || x.amount || '0';
+          try { totalBonded += BigInt(stake); } catch {}
+        }
+        setValidatorMeta({
+          count: v?.count ?? list.length,
+          stakingContract: v?.stakingContract,
+          totalBondedWei: totalBonded.toString(),
+        });
+      } catch { /* optional endpoint */ }
+
+      // Chain metadata.
+      try {
+        const m = await getChainInfo();
+        if (!cancelled && m) setChainMeta(m);
+      } catch { /* optional */ }
+
+      // Indexer-sourced data.
+      try {
+        const [statsRes, txsRes, healthRes] = await Promise.all([
+          fetch('/api/indexer/stats').then((r) => r.ok ? r.json() : null),
+          fetch(`/api/indexer/txs/recent?limit=${RECENT_TXS}`).then((r) => r.ok ? r.json() : null),
+          fetch('/api/indexer/health').then((r) => r.ok ? r.json() : null),
+        ]);
+        if (cancelled) return;
+        if (statsRes) setIndexerStats(statsRes);
+        if (txsRes) setRecentTxs(txsRes.rows || []);
+        if (healthRes) setIndexerHealth(healthRes);
+      } catch { /* indexer optional */ }
     };
 
     refresh();
@@ -66,11 +90,16 @@ export default function Home() {
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
+  const validatorCount = validatorMeta.count ?? (validators ? validators.length : null);
+  const totalBondedAse = validatorMeta.totalBondedWei
+    ? (BigInt(validatorMeta.totalBondedWei) / ONE_ASE).toString()
+    : null;
+
   return (
-    <Layout title="Home" description="Live blocks, transactions, and validators on the Asentum chain.">
+    <Layout title="Home" description="Live blocks, transactions, validators, and indexed network stats on the Asentum chain.">
       {/* Hero */}
-      <section className="dash-border-t px-[4%] py-16 md:py-24 relative overflow-hidden">
-        <div className="max-w-4xl mx-auto text-center space-y-6">
+      <section className="dash-border-t px-[4%] py-16 md:py-20 relative overflow-hidden">
+        <div className="max-w-4xl mx-auto text-center space-y-5">
           <span
             className="font-dm-mono text-xs font-medium tracking-[0.15em] inline-block px-4 py-2"
             style={{ color: '#26CC6B', backgroundColor: '#0A1D12' }}
@@ -82,30 +111,77 @@ export default function Home() {
             <span className="text-white">Block Explorer.</span>
           </h1>
           <p className="font-dm-mono text-[14px] text-[#7D7D7D] max-w-2xl mx-auto leading-relaxed">
-            The post-quantum, JavaScript-native L1. Every block signed with Dilithium3. Validators rotate every block.
+            The post-quantum, JavaScript-native L1. Every block, vote, and transaction signed with Dilithium3.
           </p>
         </div>
       </section>
 
-      {/* Stats */}
+      {/* Primary chain stats */}
       <section className="dash-border-t px-[4%] py-8">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 max-w-6xl mx-auto">
-          <StatCard label="Latest block" value={latest != null ? `#${latest.toLocaleString()}` : '—'} color="#4ADE80" />
-          <StatCard label="Block time" value="5.0s" sub="target" />
-          <StatCard label="Validators" value={validatorCount != null ? validatorCount : '—'} sub="active" />
-          <StatCard label="Signatures" value="Dilithium3" sub="ML-DSA-65" />
+        <div className="max-w-6xl mx-auto">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+            <StatCard
+              label="Latest block"
+              value={latest != null ? `#${latest.toLocaleString()}` : '—'}
+              color="#4ADE80"
+              sub={chainMeta?.chainName || CHAIN_NAME}
+            />
+            <StatCard
+              label="Validators"
+              value={validatorCount != null ? validatorCount : '—'}
+              sub={totalBondedAse ? `${Number(totalBondedAse).toLocaleString()} ASE bonded` : 'active set'}
+            />
+            <StatCard
+              label="Block time"
+              value="5.0s"
+              sub="target"
+            />
+            <StatCard
+              label="Signatures"
+              value="Dilithium3"
+              sub="ML-DSA-65 · 3,309 bytes"
+              color="#A6A6FF"
+            />
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard
+              label="Indexed txs"
+              value={indexerStats ? indexerStats.totalTxs.toLocaleString() : '—'}
+              sub="all-time"
+            />
+            <StatCard
+              label="Unique addresses"
+              value={indexerStats ? indexerStats.distinctAddresses.toLocaleString() : '—'}
+              sub="seen on-chain"
+            />
+            <StatCard
+              label="Contracts"
+              value={indexerStats ? indexerStats.contractsCreated.toLocaleString() : '—'}
+              sub="deployed"
+            />
+            <StatCard
+              label="Chain ID"
+              value={chainMeta?.chainIdDecimal || CHAIN_ID}
+              sub={chainMeta?.nativeCurrency?.symbol ? `Native: ${chainMeta.nativeCurrency.symbol}` : null}
+            />
+          </div>
+          {indexerHealth && indexerHealth.lag != null && indexerHealth.lag > 5 && (
+            <p className="font-dm-mono text-[11px] text-[#F29751] mt-3">
+              Indexer is {indexerHealth.lag} blocks behind. Catching up…
+            </p>
+          )}
+          {error && (
+            <p className="font-dm-mono text-[11px] text-[#F87171] mt-3">
+              RPC error: {error}
+            </p>
+          )}
         </div>
-        {error && (
-          <p className="font-dm-mono text-[11px] text-[#F87171] mt-4 max-w-6xl mx-auto">
-            RPC error: {error}
-          </p>
-        )}
       </section>
 
       {/* Recent blocks + txs */}
       <section className="dash-border-t px-[4%] py-12">
         <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Blocks */}
+          {/* Recent blocks */}
           <div>
             <div className="flex items-end justify-between mb-4">
               <h2 className="font-plus text-[20px] font-bold text-white">Recent blocks</h2>
@@ -122,16 +198,31 @@ export default function Home() {
                     <Link
                       key={b.hash}
                       href={`/block/${n}`}
-                      className="flex items-center justify-between px-4 py-3 border-b border-[#1A1A1A] last:border-b-0 hover:bg-[#0F0F0F] transition-colors"
+                      className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[#1A1A1A] last:border-b-0 hover:bg-[#0F0F0F] transition-colors"
                     >
-                      <div className="min-w-0">
-                        <p className="font-dm-mono text-[13px] text-white tabular-nums">#{n.toLocaleString()}</p>
-                        <p className="font-dm-mono text-[10px] text-[#5A5A5A] mt-0.5">
-                          {relativeTime(b.timestamp)} · {b.miner ? shortHash(b.miner, 6, 4) : 'unknown proposer'}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-baseline gap-2">
+                          <p className="font-dm-mono text-[13px] text-white tabular-nums">#{n.toLocaleString()}</p>
+                          <p className="font-dm-mono text-[10px] text-[#5A5A5A]">{relativeTime(b.timestamp)}</p>
+                        </div>
+                        <p className="font-dm-mono text-[10px] text-[#7D7D7D] mt-1 truncate">
+                          <span className="text-[#5A5A5A]">Proposer </span>
+                          {b.miner ? (
+                            <span className="text-[#A6A6FF]">{shortHash(b.miner, 8, 6)}</span>
+                          ) : (
+                            <span className="text-[#5A5A5A]">unknown</span>
+                          )}
                         </p>
                       </div>
                       <div className="text-right flex-shrink-0">
-                        <p className="font-dm-mono text-[12px] text-[#26CC6B] tabular-nums">{txCount} tx</p>
+                        <p className="font-dm-mono text-[12px] tabular-nums" style={{ color: txCount > 0 ? '#26CC6B' : '#5A5A5A' }}>
+                          {txCount} tx
+                        </p>
+                        {b.gasUsed && (
+                          <p className="font-dm-mono text-[10px] text-[#5A5A5A] mt-1">
+                            {hexToNumber(b.gasUsed).toLocaleString()} gas
+                          </p>
+                        )}
                       </div>
                     </Link>
                   );
@@ -140,31 +231,46 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Txs */}
+          {/* Recent transactions (indexer-sourced) */}
           <div>
             <div className="flex items-end justify-between mb-4">
               <h2 className="font-plus text-[20px] font-bold text-white">Recent transactions</h2>
+              <span className="font-dm-mono text-[11px] text-[#5A5A5A]">across all blocks</span>
             </div>
             <div className="border border-[#1F1F1F] bg-[#0A0A0A]">
-              {recentTxs.length === 0 ? (
-                <p className="font-dm-mono text-[12px] text-[#5A5A5A] p-4">{blocks.length ? 'No transactions in recent blocks.' : 'Loading…'}</p>
+              {recentTxs === null ? (
+                <p className="font-dm-mono text-[12px] text-[#5A5A5A] p-4">Loading…</p>
+              ) : recentTxs.length === 0 ? (
+                <p className="font-dm-mono text-[12px] text-[#5A5A5A] p-4">No transactions indexed yet.</p>
               ) : (
                 recentTxs.map((tx) => (
                   <Link
                     key={tx.hash}
                     href={`/tx/${tx.hash}`}
-                    className="flex items-center justify-between px-4 py-3 border-b border-[#1A1A1A] last:border-b-0 hover:bg-[#0F0F0F] transition-colors"
+                    className="flex items-center justify-between gap-3 px-4 py-3 border-b border-[#1A1A1A] last:border-b-0 hover:bg-[#0F0F0F] transition-colors"
                   >
-                    <div className="min-w-0">
-                      <p className="font-dm-mono text-[12px] text-[#A6A6FF]">{shortHash(tx.hash, 8, 6)}</p>
-                      <p className="font-dm-mono text-[10px] text-[#5A5A5A] mt-0.5">
-                        {tx.from && (<>from <span className="text-white">{shortHash(tx.from, 6, 4)}</span></>)}
-                        {tx.to && (<> → <span className="text-white">{shortHash(tx.to, 6, 4)}</span></>)}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline gap-2">
+                        <p className="font-dm-mono text-[12px] text-[#A6A6FF]">{shortHash(tx.hash, 8, 6)}</p>
+                        <p className="font-dm-mono text-[10px] text-[#5A5A5A]">{relativeTime(tx.timestamp)}</p>
+                      </div>
+                      <p className="font-dm-mono text-[10px] text-[#7D7D7D] mt-1 truncate">
+                        <span className="text-white">{shortHash(tx.from_addr, 6, 4)}</span>
+                        {' → '}
+                        {tx.to_addr ? (
+                          <span className="text-white">{shortHash(tx.to_addr, 6, 4)}</span>
+                        ) : tx.contract_created ? (
+                          <span className="text-[#A6A6FF]">contract deploy</span>
+                        ) : (
+                          <span className="text-[#F29751]">contract creation</span>
+                        )}
                       </p>
                     </div>
                     <div className="text-right flex-shrink-0">
                       <p className="font-dm-mono text-[12px] text-[#26CC6B] tabular-nums">{formatAse(tx.value)} ASE</p>
-                      <p className="font-dm-mono text-[10px] text-[#5A5A5A]">{relativeTime(tx.blockTimestamp)}</p>
+                      <p className="font-dm-mono text-[10px] text-[#5A5A5A] mt-1">
+                        block #{tx.block_number.toLocaleString()}
+                      </p>
                     </div>
                   </Link>
                 ))

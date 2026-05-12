@@ -6,7 +6,7 @@
 
 import { createServer } from 'node:http';
 import { URL } from 'node:url';
-import { txsForAddress, statsForAddress, indexHealth } from './db.js';
+import { txsForAddress, statsForAddress, indexHealth, recentTxs, globalStats } from './db.js';
 
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 
@@ -36,6 +36,17 @@ export function startApi({ db, rpc, port, host }) {
           lag = head - stats.lastIndexedBlock;
         } catch {}
         return json(res, 200, { ok: true, ...stats, head, lag });
+      }
+
+      // Network-wide aggregate counts.
+      if (path === '/stats') {
+        return json(res, 200, globalStats(db));
+      }
+
+      // Latest N transactions across the whole chain, regardless of address.
+      if (path === '/txs/recent') {
+        const limit = Math.min(50, Math.max(1, parseInt(u.searchParams.get('limit') || '13', 10)));
+        return json(res, 200, { rows: recentTxs(db, limit) });
       }
 
       // /address/:addr/txs?page=&size=&role=
