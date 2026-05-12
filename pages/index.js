@@ -7,9 +7,30 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Layout from '@/components/Layout';
-import StatCard from '@/components/StatCard';
 import { getBlockNumber, getBlockByNumber, getValidators, getChainInfo, CHAIN_NAME, CHAIN_ID } from '@/lib/rpc';
 import { hexToNumber, formatAse, shortHash, relativeTime } from '@/lib/format';
+
+// Inline stat cell for the hero band. No background or border; visually
+// separated from siblings by the page-level dashed rails (top + right).
+function Stat({ label, value, sub, color, top, right }) {
+  const classes = [
+    'flex flex-col items-center justify-center text-center px-6 py-12 min-h-[180px]',
+    top ? 'dash-border-t' : '',
+    right ? 'dash-sep-r-desktop' : '',
+  ].filter(Boolean).join(' ');
+  return (
+    <div className={classes}>
+      <p className="font-dm-mono text-[10px] uppercase tracking-[0.15em] text-[#5A5A5A] mb-3">{label}</p>
+      <p
+        className="font-plus text-[28px] md:text-[36px] font-bold tabular-nums leading-none"
+        style={{ color: color || '#FFFFFF' }}
+      >
+        {value}
+      </p>
+      {sub && <p className="font-dm-mono text-[11px] text-[#7D7D7D] mt-3 leading-relaxed">{sub}</p>}
+    </div>
+  );
+}
 
 const RECENT_BLOCKS = 13;
 const RECENT_TXS = 13;
@@ -116,66 +137,64 @@ export default function Home() {
         </div>
       </section>
 
-      {/* Primary chain stats */}
-      <section className="dash-border-t px-[4%] py-8">
-        <div className="max-w-6xl mx-auto">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
-            <StatCard
-              label="Latest block"
-              value={latest != null ? `#${latest.toLocaleString()}` : '—'}
-              color="#4ADE80"
-              sub={chainMeta?.chainName || CHAIN_NAME}
-            />
-            <StatCard
-              label="Validators"
-              value={validatorCount != null ? validatorCount : '—'}
-              sub={totalBondedAse ? `${Number(totalBondedAse).toLocaleString()} ASE bonded` : 'active set'}
-            />
-            <StatCard
-              label="Block time"
-              value="5.0s"
-              sub="target"
-            />
-            <StatCard
-              label="Signatures"
-              value="Dilithium3"
-              sub="ML-DSA-65 · 3,309 bytes"
-              color="#A6A6FF"
-            />
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatCard
-              label="Indexed txs"
-              value={indexerStats ? indexerStats.totalTxs.toLocaleString() : '—'}
-              sub="all-time"
-            />
-            <StatCard
-              label="Unique addresses"
-              value={indexerStats ? indexerStats.distinctAddresses.toLocaleString() : '—'}
-              sub="seen on-chain"
-            />
-            <StatCard
-              label="Contracts"
-              value={indexerStats ? indexerStats.contractsCreated.toLocaleString() : '—'}
-              sub="deployed"
-            />
-            <StatCard
-              label="Chain ID"
-              value={chainMeta?.chainIdDecimal || CHAIN_ID}
-              sub={chainMeta?.nativeCurrency?.symbol ? `Native: ${chainMeta.nativeCurrency.symbol}` : null}
-            />
-          </div>
-          {indexerHealth && indexerHealth.lag != null && indexerHealth.lag > 5 && (
-            <p className="font-dm-mono text-[11px] text-[#F29751] mt-3">
-              Indexer is {indexerHealth.lag} blocks behind. Catching up…
-            </p>
-          )}
-          {error && (
-            <p className="font-dm-mono text-[11px] text-[#F87171] mt-3">
-              RPC error: {error}
-            </p>
-          )}
+      {/* Primary chain stats — full-width band, dashed separators */}
+      <section className="dash-border-t">
+        <div className="grid grid-cols-1 md:grid-cols-3 px-[4%]">
+          <Stat
+            label="Latest block"
+            value={latest != null ? `#${latest.toLocaleString()}` : '—'}
+            color="#4ADE80"
+            sub={chainMeta?.chainName || CHAIN_NAME}
+            right
+          />
+          <Stat
+            label="Validators"
+            value={validatorCount != null ? validatorCount : '—'}
+            sub={totalBondedAse ? `${Number(totalBondedAse).toLocaleString()} ASE bonded` : 'active set'}
+            right
+          />
+          <Stat
+            label="Signatures"
+            value="Dilithium3"
+            sub="ML-DSA-65 · 3,309 bytes"
+            color="#A6A6FF"
+          />
+
+          <Stat
+            label="Indexed txs"
+            value={indexerStats ? indexerStats.totalTxs.toLocaleString() : '—'}
+            sub="all-time"
+            top
+            right
+          />
+          <Stat
+            label="Unique addresses"
+            value={indexerStats ? indexerStats.distinctAddresses.toLocaleString() : '—'}
+            sub="seen on-chain"
+            top
+            right
+          />
+          <Stat
+            label="Contracts"
+            value={indexerStats ? indexerStats.contractsCreated.toLocaleString() : '—'}
+            sub="deployed"
+            top
+          />
         </div>
+        {(indexerHealth?.lag > 5 || error) && (
+          <div className="px-[4%] py-3 dash-border-t">
+            {indexerHealth?.lag > 5 && (
+              <p className="font-dm-mono text-[11px] text-[#F29751]">
+                Indexer is {indexerHealth.lag} blocks behind. Catching up…
+              </p>
+            )}
+            {error && (
+              <p className="font-dm-mono text-[11px] text-[#F87171]">
+                RPC error: {error}
+              </p>
+            )}
+          </div>
+        )}
       </section>
 
       {/* Recent blocks + txs */}
