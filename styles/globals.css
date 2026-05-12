@@ -1,0 +1,84 @@
+@import url('https://fonts.googleapis.com/css2?family=Albert+Sans:ital,wght@0,100..900;1,100..900&family=DM+Mono:wght@400;500&family=Inter+Tight:ital,wght@0,100..900;1,100..900&family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&display=swap');
+@import "tailwindcss";
+
+.font-inter { font-family: "Inter Tight", sans-serif; }
+.font-dm-mono { font-family: "DM Mono", monospace; }
+.font-plus { font-family: "Plus Jakarta Sans", sans-serif; }
+
+body { font-family: "Albert Sans", sans-serif; }
+
+@theme {
+  --font-sans: "Albert Sans", sans-serif;
+  --font-title: "Inter Tight", sans-serif;
+}
+
+:root {
+  --background: #000000;
+  --foreground: #FFFFFF;
+  --card: #0A0A0A;
+  --card-foreground: #FFFFFF;
+  --border: #1F1F1F;
+  --muted: #141414;
+  --muted-foreground: #A1A1A6;
+  --accent-green: #26CC6B;
+  --accent-green-bright: #4ADE80;
+  --accent-violet: #A6A6FF;
+}
+
+@layer base {
+  html { color-scheme: dark; }
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font-family: "Albert Sans", sans-serif;
+  }
+  ::selection { background: #1A3A1A; color: #4ADE80; }
+}
+
+/* Dashed rails matching the marketing site. */
+.dash-border-t {
+  border-top: none !important;
+  background-image: repeating-linear-gradient(to right, #363636 0, #363636 16px, transparent 16px, transparent 28px);
+  background-size: 100% 1px;
+  background-repeat: no-repeat;
+  background-position: top;
+}
+.dash-border-b {
+  border-bottom: none !important;
+  background-image: repeating-linear-gradient(to right, #363636 0, #363636 16px, transparent 16px, transparent 28px);
+  background-size: 100% 1px;
+  background-repeat: no-repeat;
+  background-position: bottom;
+}
+
+/* Vertical dashed grid lines at 4% margins. */
+body::before,
+body::after {
+  content: '';
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  z-index: 9999;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    #363636 0,
+    #363636 16px,
+    transparent 16px,
+    transparent 28px
+  );
+}
+body::before { left: 4%; }
+body::after { right: 4%; }
+
+@media (min-width: 768px) {
+  .dash-sep-r-desktop {
+    background-image: repeating-linear-gradient(to bottom, #363636 0, #363636 16px, transparent 16px, transparent 28px);
+    background-size: 1px 100%;
+    background-repeat: no-repeat;
+    background-position: right;
+  }
+}
+
+html { scroll-behavior: smooth; }
