@@ -6,7 +6,7 @@
 
 import { createServer } from 'node:http';
 import { URL } from 'node:url';
-import { txsForAddress, statsForAddress, indexHealth, recentTxs, globalStats } from './db.js';
+import { txsForAddress, statsForAddress, indexHealth, recentTxs, globalStats, proposerStats } from './db.js';
 
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 
@@ -47,6 +47,12 @@ export function startApi({ db, rpc, port, host }) {
       if (path === '/txs/recent') {
         const limit = Math.min(50, Math.max(1, parseInt(u.searchParams.get('limit') || '13', 10)));
         return json(res, 200, { rows: recentTxs(db, limit) });
+      }
+
+      // Per-validator proposer stats: total blocks and recent-window blocks.
+      if (path === '/validators/proposer-stats') {
+        const window = Math.min(1000, Math.max(1, parseInt(u.searchParams.get('window') || '30', 10)));
+        return json(res, 200, proposerStats(db, window));
       }
 
       // /address/:addr/txs?page=&size=&role=

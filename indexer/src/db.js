@@ -43,6 +43,16 @@ function migrate(db) {
     );
     CREATE INDEX IF NOT EXISTS idx_addr_block ON address_txs(address, block_number DESC);
 
+    CREATE TABLE IF NOT EXISTS blocks (
+      number INTEGER PRIMARY KEY,
+      hash TEXT NOT NULL,
+      proposer TEXT,
+      timestamp INTEGER NOT NULL,
+      tx_count INTEGER NOT NULL DEFAULT 0,
+      gas_used INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_blocks_proposer ON blocks(proposer);
+
     CREATE TABLE IF NOT EXISTS meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -59,6 +69,68 @@ export function setMeta(db, key, value) {
   db.prepare(
     'INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
   ).run(key, String(value));
+}
+
+export function recordBlock(db, block) {
+  const number = parseInt(block.number, 16);
+  const proposer = block.miner ? block.miner.toLowerCase() : null;
+  const timestamp = parseInt(block.timestamp, 16);
+  const txCount = (block.transactions || []).length;
+  const gasUsed = block.gasUsed ? parseInt(block.gasUsed, 16) : null;
+  db.prepare(`
+    INSERT INTO blocks (number, hash, proposer, timestamp, tx_count, gas_used)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(number) DO UPDATE SET
+      hash = excluded.hash,
+      proposer = excluded.proposer,
+      timestamp = excluded.timestamp,
+      tx_count = excluded.tx_count,
+      gas_used = excluded.gas_used
+  `).run(number, block.hash.toLowerCase(), proposer, timestamp, txCount, gasUsed);
+}
+
+export function blockCount(db) {
+  return db.prepare('SELECT COUNT(*) AS n FROM blocks').get().n;
+}
+
+// Aggregate proposer activity. Recent window defaults to the last 30 blocks
+// (matches the chain's liveness-aware committee filter).
+export function proposerStats(db, recentWindow = 30) {
+  const headRow = db.prepare('SELECT MAX(number) AS n FROM blocks').get();
+  const head = headRow.n || 0;
+  const recentFrom = Math.max(0, head - recentWindow + 1);
+
+  const overall = db.prepare(`
+    SELECT proposer, COUNT(*) AS blocks
+    FROM blocks
+    WHERE proposer IS NOT NULL
+    GROUP BY proposer
+  `).all();
+
+  const recent = db.prepare(`
+    SELECT proposer, COUNT(*) AS blocks
+    FROM blocks
+    WHERE proposer IS NOT NULL AND number >= ?
+    GROUP BY proposer
+  `).all(recentFrom);
+
+  const overallByAddr = new Map(overall.map((r) => [r.proposer, r.blocks]));
+  const recentByAddr = new Map(recent.map((r) => [r.proposer, r.blocks]));
+
+  return {
+    head,
+    recentWindow,
+    recentFrom,
+    totalBlocksIndexed: overall.reduce((s, r) => s + r.blocks, 0),
+    recentProposerCount: recent.length,
+    perValidator: Array.from(overallByAddr.keys()).reduce((acc, addr) => {
+      acc[addr] = {
+        totalBlocks: overallByAddr.get(addr) || 0,
+        recentBlocks: recentByAddr.get(addr) || 0,
+      };
+      return acc;
+    }, {}),
+  };
 }
 
 export function insertBlockTxs(db, block, receipts) {

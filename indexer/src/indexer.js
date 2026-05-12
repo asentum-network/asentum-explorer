@@ -3,7 +3,7 @@
 //
 // milkie · 2026
 
-import { getMeta, setMeta, insertBlockTxs } from './db.js';
+import { getMeta, setMeta, insertBlockTxs, recordBlock, blockCount } from './db.js';
 
 // Idempotent. INSERT OR REPLACE keys on tx hash, so re-running over already
 // indexed blocks just rewrites the same rows.
@@ -22,6 +22,16 @@ export async function runIndexer({ db, rpc, batchSize = 25, pollMs = 3000, start
     const head = await rpc.getBlockNumber();
     nextBlock = head + 1;
     console.log(`[indexer] start_from=latest resolved to block ${nextBlock}`);
+  }
+
+  // Backfill the blocks table for any block already past in last_indexed_block
+  // but missing from blocks (typical when upgrading an existing db).
+  const lastIndexed = parseInt(getMeta(db, 'last_indexed_block') || '-1', 10);
+  const haveBlocks = blockCount(db);
+  if (lastIndexed >= 0 && haveBlocks < lastIndexed + 1) {
+    console.log(`[indexer] backfilling blocks table: have ${haveBlocks}, need ${lastIndexed + 1}`);
+    await backfillBlocks({ db, rpc, from: 0, to: lastIndexed, batchSize });
+    console.log(`[indexer] blocks-table backfill complete`);
   }
 
   while (true) {
@@ -82,6 +92,7 @@ export async function runIndexer({ db, rpc, batchSize = 25, pollMs = 3000, start
       }
 
       try {
+        recordBlock(db, block);
         insertBlockTxs(db, block, receiptsByHash);
         setMeta(db, 'last_indexed_block', expectedBlockNum);
         if (txs.length > 0) {
@@ -94,6 +105,36 @@ export async function runIndexer({ db, rpc, batchSize = 25, pollMs = 3000, start
         break;
       }
     }
+  }
+}
+
+// One-shot historical scan of headers only. Cheap compared to the full
+// indexer (no receipts, no tx body bodies) but still gives us proposer +
+// timestamp + tx count per block.
+async function backfillBlocks({ db, rpc, from, to, batchSize }) {
+  let cursor = from;
+  while (cursor <= to) {
+    const end = Math.min(to, cursor + batchSize - 1);
+    const calls = [];
+    for (let n = cursor; n <= end; n++) {
+      calls.push({ method: 'eth_getBlockByNumber', params: ['0x' + n.toString(16), false] });
+    }
+    let blocks;
+    try {
+      blocks = await rpc.batch(calls);
+    } catch (err) {
+      console.error(`[backfill] batch failed at ${cursor}, retrying:`, err.message);
+      await sleep(1500);
+      continue;
+    }
+    const trx = db.transaction((rows) => {
+      for (const b of rows) if (b) recordBlock(db, b);
+    });
+    trx(blocks);
+    if (cursor % 5000 === 0 || end === to) {
+      console.log(`[backfill] blocks ${cursor}-${end}`);
+    }
+    cursor = end + 1;
   }
 }
 
