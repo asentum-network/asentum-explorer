@@ -11,7 +11,10 @@ import { getValidators } from '@/lib/rpc';
 import { shortHash, formatAse } from '@/lib/format';
 
 const ONE_ASE = 10n ** 18n;
-const RECENT_WINDOW = 30;
+// Block production window for the "Recent" column. 10,000 blocks at 5s
+// each is roughly 13.9 hours of activity, enough to surface validators
+// that are producing now without including ancient history.
+const RECENT_WINDOW = 10000;
 
 function Stat({ label, value, sub, color, top, right }) {
   const classes = [
@@ -80,7 +83,7 @@ export default function ValidatorsPage() {
         <div className="max-w-6xl mx-auto">
           <h1 className="font-plus text-[28px] md:text-[36px] font-bold text-white mb-2">Validators</h1>
           <p className="font-dm-mono text-[12px] text-[#7D7D7D]">
-            Active set rebuilt every block from on-chain bonded stake. Liveness-aware committee filters to validators who have proposed in the last {RECENT_WINDOW} blocks.
+            Active set rebuilt every block from on-chain bonded stake. Block-production counts below cover the last {RECENT_WINDOW.toLocaleString()} blocks (~{Math.round(RECENT_WINDOW * 5 / 3600)}h of chain activity).
           </p>
         </div>
       </section>
@@ -104,7 +107,7 @@ export default function ValidatorsPage() {
           <Stat
             label="Recent proposers"
             value={recentProposerCount != null ? recentProposerCount : '—'}
-            sub={`last ${RECENT_WINDOW} blocks`}
+            sub={`last ${RECENT_WINDOW.toLocaleString()} blocks`}
             color="#A6A6FF"
           />
           <Stat
@@ -150,7 +153,7 @@ export default function ValidatorsPage() {
                   <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]">Bonded</th>
                   <th className="text-left px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]">Status</th>
                   <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]">Blocks total</th>
-                  <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]" title={`Last ${RECENT_WINDOW} blocks`}>Recent</th>
+                  <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]" title={`Blocks proposed in the last ${RECENT_WINDOW.toLocaleString()} blocks`}>Recent ({RECENT_WINDOW >= 1000 ? `${RECENT_WINDOW / 1000}k` : RECENT_WINDOW})</th>
                   <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]">Bonded at</th>
                   <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]">Pubkey size</th>
                 </tr>

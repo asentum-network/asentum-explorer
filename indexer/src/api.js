@@ -50,8 +50,9 @@ export function startApi({ db, rpc, port, host }) {
       }
 
       // Per-validator proposer stats: total blocks and recent-window blocks.
+      // Window is configurable up to 100k blocks (~5.8 days at 5s blocks).
       if (path === '/validators/proposer-stats') {
-        const window = Math.min(1000, Math.max(1, parseInt(u.searchParams.get('window') || '30', 10)));
+        const window = Math.min(100000, Math.max(1, parseInt(u.searchParams.get('window') || '30', 10)));
         return json(res, 200, proposerStats(db, window));
       }
 
