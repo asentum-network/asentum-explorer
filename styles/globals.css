@@ -79,6 +79,28 @@ body::after { right: 4%; }
     background-repeat: no-repeat;
     background-position: right;
   }
+  /* Combined top + right. Plain CSS only supports one background-image per
+     rule, so cells that need BOTH must use this multi-background class
+     instead of composing `dash-border-t` and `dash-sep-r-desktop`. */
+  .dash-t-and-r-desktop {
+    background-image:
+      repeating-linear-gradient(to right, #363636 0, #363636 16px, transparent 16px, transparent 28px),
+      repeating-linear-gradient(to bottom, #363636 0, #363636 16px, transparent 16px, transparent 28px);
+    background-size: 100% 1px, 1px 100%;
+    background-repeat: no-repeat, no-repeat;
+    background-position: top, right;
+  }
+}
+@media (max-width: 767px) {
+  /* On mobile the grid collapses to a single column, so the right-edge
+     line is irrelevant. Only the top horizontal line survives. */
+  .dash-t-and-r-desktop {
+    border-top: none !important;
+    background-image: repeating-linear-gradient(to right, #363636 0, #363636 16px, transparent 16px, transparent 28px);
+    background-size: 100% 1px;
+    background-repeat: no-repeat;
+    background-position: top;
+  }
 }
 
 html { scroll-behavior: smooth; }

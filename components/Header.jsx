@@ -57,7 +57,7 @@ const NAV_ITEMS = [
 export default function Header() {
   return (
     <header className="sticky top-0 z-50 backdrop-blur-sm bg-black/80 border-b border-[#1F1F1F]">
-      <div className="px-[4%] py-3 flex items-center gap-4">
+      <div className="px-[6%] py-3 flex items-center gap-4">
         <Link href="/" className="flex items-center gap-3 flex-shrink-0">
           <img src="https://asentum.com/images/logo.svg" alt="Asentum" style={{ width: 110, height: 22 }} />
           <span className="font-dm-mono text-[10px] tracking-[0.15em] text-[#7D7D7D] uppercase border-l border-[#1F1F1F] pl-3">

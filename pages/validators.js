@@ -17,10 +17,15 @@ const ONE_ASE = 10n ** 18n;
 const RECENT_WINDOW = 10000;
 
 function Stat({ label, value, sub, color, top, right }) {
+  // Plain CSS classes for top + right collide because both define
+  // background-image. Use the combined helper class when both are needed.
+  let lineClass = '';
+  if (top && right) lineClass = 'dash-t-and-r-desktop';
+  else if (top) lineClass = 'dash-border-t';
+  else if (right) lineClass = 'dash-sep-r-desktop';
   const classes = [
     'flex flex-col items-center justify-center text-center px-6 py-10 min-h-[160px]',
-    top ? 'dash-border-t' : '',
-    right ? 'dash-sep-r-desktop' : '',
+    lineClass,
   ].filter(Boolean).join(' ');
   return (
     <div className={classes}>

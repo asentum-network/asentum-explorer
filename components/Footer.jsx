@@ -9,7 +9,7 @@ import { RPC_URL, CHAIN_NAME, CHAIN_ID } from '@/lib/rpc';
 export default function Footer() {
   return (
     <footer className="dash-border-t mt-20">
-      <div className="px-[4%] py-10 grid grid-cols-1 md:grid-cols-4 gap-6">
+      <div className="px-[6%] py-10 grid grid-cols-1 md:grid-cols-4 gap-6">
         <div>
           <p className="font-plus font-bold text-white text-[14px] mb-2">Asentum Explorer</p>
           <p className="font-dm-mono text-[11px] text-[#7D7D7D] leading-relaxed">
@@ -46,7 +46,7 @@ export default function Footer() {
           </ul>
         </div>
       </div>
-      <div className="dash-border-t px-[4%] py-4">
+      <div className="dash-border-t px-[6%] py-4">
         <p className="font-dm-mono text-[10px] text-[#5A5A5A]">© Asentum {new Date().getUTCFullYear()}</p>
       </div>
     </footer>
