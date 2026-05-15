@@ -52,6 +52,7 @@ function BlockBadge() {
 const NAV_ITEMS = [
   { label: 'Blocks', href: '/blocks' },
   { label: 'Validators', href: '/validators' },
+  { label: 'Faucet', href: '/faucet' },
 ];
 
 export default function Header() {
