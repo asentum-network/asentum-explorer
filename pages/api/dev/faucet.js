@@ -21,11 +21,26 @@ const DEFAULT_AMOUNT_WEI = (100n * 10n ** 18n).toString(); // 100 ASE
 const MAX_AMOUNT_WEI = (500n * 10n ** 18n).toString();     // safety cap
 
 // Rate limits: 1 drip per IP per 60s, 1 drip per recipient per 5 min.
+// The per-IP bucket is for casual abuse on the web faucet form. The
+// per-recipient bucket is the real teeth — every recipient address
+// pays the cooldown regardless of which IP requested.
 const IP_COOLDOWN_MS = 60 * 1000;
 const RECIPIENT_COOLDOWN_MS = 5 * 60 * 1000;
 
 const ipLastDrip = new Map();        // ip → ms timestamp
 const addrLastDrip = new Map();      // addr → ms timestamp
+
+// IPs of trusted server-side callers (the Telegram wallet bot, etc.).
+// These bypass the per-IP rate limit since they route many distinct
+// end-users through a single source address. The per-recipient
+// cooldown still applies, so abuse via one user spamming themselves
+// is still rate-limited at the recipient level.
+const TRUSTED_IPS = new Set(
+  (process.env.FAUCET_TRUSTED_IPS || '178.104.0.193')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
 
 function clientIp(req) {
   const fwd = req.headers['x-forwarded-for'];
@@ -88,22 +103,25 @@ export default async function handler(req, res) {
   }
 
   const ip = clientIp(req);
-  const ipPrev = ipLastDrip.get(ip);
-  const ipCheck = takeBucket(ipLastDrip, ip, IP_COOLDOWN_MS);
-  if (!ipCheck.ok) {
-    res.setHeader('Retry-After', String(Math.ceil(ipCheck.retryAfterMs / 1000)));
-    return res.status(429).json({
-      accepted: false,
-      reason: `IP rate limited — try again in ${Math.ceil(ipCheck.retryAfterMs / 1000)}s`,
-      retryAfterMs: ipCheck.retryAfterMs,
-    });
+  const trusted = TRUSTED_IPS.has(ip);
+  const ipPrev = trusted ? undefined : ipLastDrip.get(ip);
+  if (!trusted) {
+    const ipCheck = takeBucket(ipLastDrip, ip, IP_COOLDOWN_MS);
+    if (!ipCheck.ok) {
+      res.setHeader('Retry-After', String(Math.ceil(ipCheck.retryAfterMs / 1000)));
+      return res.status(429).json({
+        accepted: false,
+        reason: `IP rate limited — try again in ${Math.ceil(ipCheck.retryAfterMs / 1000)}s`,
+        retryAfterMs: ipCheck.retryAfterMs,
+      });
+    }
   }
 
   const addrPrev = addrLastDrip.get(to);
   const addrCheck = takeBucket(addrLastDrip, to, RECIPIENT_COOLDOWN_MS);
   if (!addrCheck.ok) {
-    // Roll back the IP token — the user didn't actually consume a drip.
-    rollbackBucket(ipLastDrip, ip, ipPrev);
+    // Roll back the IP token (if we took one) — the user didn't actually consume a drip.
+    if (!trusted) rollbackBucket(ipLastDrip, ip, ipPrev);
     res.setHeader('Retry-After', String(Math.ceil(addrCheck.retryAfterMs / 1000)));
     return res.status(429).json({
       accepted: false,
@@ -121,9 +139,9 @@ export default async function handler(req, res) {
       body: JSON.stringify({ to, amount: amountWei }),
     });
   } catch (err) {
-    // Couldn't reach upstream — roll back both rate-limit tokens so the
+    // Couldn't reach upstream — roll back any tokens we took so the
     // user can retry immediately.
-    rollbackBucket(ipLastDrip, ip, ipPrev);
+    if (!trusted) rollbackBucket(ipLastDrip, ip, ipPrev);
     rollbackBucket(addrLastDrip, to, addrPrev);
     return res.status(502).json({
       accepted: false,
@@ -135,7 +153,7 @@ export default async function handler(req, res) {
   try {
     data = await upstream.json();
   } catch {
-    rollbackBucket(ipLastDrip, ip, ipPrev);
+    if (!trusted) rollbackBucket(ipLastDrip, ip, ipPrev);
     rollbackBucket(addrLastDrip, to, addrPrev);
     return res.status(502).json({
       accepted: false,
@@ -146,7 +164,7 @@ export default async function handler(req, res) {
   // Pass through upstream's shape. If upstream rejected (e.g. rate-limit
   // on its side, or depleted) also roll back our own tokens.
   if (data?.accepted !== true) {
-    rollbackBucket(ipLastDrip, ip, ipPrev);
+    if (!trusted) rollbackBucket(ipLastDrip, ip, ipPrev);
     rollbackBucket(addrLastDrip, to, addrPrev);
     return res.status(upstream.status === 200 ? 400 : upstream.status).json(data);
   }
