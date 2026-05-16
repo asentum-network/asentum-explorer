@@ -16,7 +16,19 @@
 //
 // milkie · 2026
 
-const FAUCET_TARGET = process.env.FAUCET_TARGET_URL || 'http://204.168.132.194:8545';
+// The chain's per-validator faucet keeps a local nonce counter; if one
+// validator's counter falls behind / collides, its /dev/faucet returns
+// "duplicate or mempool full" until it self-corrects. We rotate across
+// the healthy validators on each request, and on a per-call failure
+// we fall back to the next one in line. Comma-separated, in order of
+// preference.
+const FAUCET_TARGETS = (
+  process.env.FAUCET_TARGET_URL ||
+  'http://178.104.168.222:8545,http://87.99.145.52:8545,http://5.78.196.152:8545,http://5.223.89.82:8545'
+)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 const DEFAULT_AMOUNT_WEI = (100n * 10n ** 18n).toString(); // 100 ASE
 const MAX_AMOUNT_WEI = (500n * 10n ** 18n).toString();     // safety cap
 
@@ -67,6 +79,11 @@ function rollbackBucket(map, key, value) {
   if (value == null) map.delete(key);
   else map.set(key, value);
 }
+
+// Monotonically-incrementing counter used to round-robin the
+// validator targets, so we don't always hit the same one first.
+let _rotate = 0;
+function rotateOffset() { return _rotate++; }
 
 export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
@@ -130,43 +147,52 @@ export default async function handler(req, res) {
     });
   }
 
-  // Forward to the upstream faucet.
-  let upstream;
-  try {
-    upstream = await fetch(`${FAUCET_TARGET}/dev/faucet`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, amount: amountWei }),
-    });
-  } catch (err) {
-    // Couldn't reach upstream — roll back any tokens we took so the
-    // user can retry immediately.
+  // Forward to the upstream faucet, falling through the validator list on
+  // transient failures (network / "duplicate or mempool full" / bad JSON).
+  // Try targets in a rotated order so we don't always hammer the first one.
+  const rotated = [
+    ...FAUCET_TARGETS.slice(rotateOffset() % FAUCET_TARGETS.length),
+    ...FAUCET_TARGETS.slice(0, rotateOffset() % FAUCET_TARGETS.length),
+  ];
+  let data = null;
+  let lastReason = 'no targets configured';
+  let lastStatus = 502;
+  for (const target of rotated) {
+    let upstream;
+    try {
+      upstream = await fetch(`${target}/dev/faucet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to, amount: amountWei }),
+      });
+    } catch (err) {
+      lastReason = `unreachable (${target}): ${err.message || err}`;
+      continue;
+    }
+    let body;
+    try { body = await upstream.json(); }
+    catch { lastReason = `non-JSON from ${target} (status ${upstream.status})`; lastStatus = 502; continue; }
+    if (body?.accepted === true) { data = body; break; }
+    // Retryable validator-side rejections: "duplicate or mempool full"
+    // or anything else that's clearly the validator's fault.
+    const reason = String(body?.reason || '');
+    if (reason.includes('duplicate') || reason.includes('mempool full') || reason.includes('nonce')) {
+      lastReason = `${target}: ${reason}`;
+      continue;
+    }
+    // Non-retryable (rate limit, bad input, depleted): pass through immediately.
     if (!trusted) rollbackBucket(ipLastDrip, ip, ipPrev);
     rollbackBucket(addrLastDrip, to, addrPrev);
-    return res.status(502).json({
-      accepted: false,
-      reason: `faucet upstream unreachable: ${err.message || err}`,
-    });
+    return res.status(upstream.status === 200 ? 400 : upstream.status).json(body);
   }
 
-  let data;
-  try {
-    data = await upstream.json();
-  } catch {
+  if (!data) {
     if (!trusted) rollbackBucket(ipLastDrip, ip, ipPrev);
     rollbackBucket(addrLastDrip, to, addrPrev);
-    return res.status(502).json({
+    return res.status(lastStatus).json({
       accepted: false,
-      reason: `faucet upstream returned non-JSON (status ${upstream.status})`,
+      reason: `faucet failed across all targets: ${lastReason}`,
     });
-  }
-
-  // Pass through upstream's shape. If upstream rejected (e.g. rate-limit
-  // on its side, or depleted) also roll back our own tokens.
-  if (data?.accepted !== true) {
-    if (!trusted) rollbackBucket(ipLastDrip, ip, ipPrev);
-    rollbackBucket(addrLastDrip, to, addrPrev);
-    return res.status(upstream.status === 200 ? 400 : upstream.status).json(data);
   }
 
   return res.status(200).json({
