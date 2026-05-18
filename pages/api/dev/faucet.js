@@ -29,8 +29,12 @@ const FAUCET_TARGETS = (
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
-const DEFAULT_AMOUNT_WEI = (100n * 10n ** 18n).toString(); // 100 ASE
-const MAX_AMOUNT_WEI = (500n * 10n ** 18n).toString();     // safety cap
+const DEFAULT_AMOUNT_WEI = (100n * 10n ** 18n).toString();    // 100 ASE
+// Cap = validator bond minimum + gas buffer. The installer + Operator
+// app request exactly 51,000 ASE so a freshly created key can bond and
+// pay a few txs of gas. The per-IP/per-recipient cooldowns below still
+// gate abuse (one 51K drip per IP per 60s = enforced spam ceiling).
+const MAX_AMOUNT_WEI = (51_000n * 10n ** 18n).toString();
 
 // Rate limits: 1 drip per IP per 60s, 1 drip per recipient per 5 min.
 // The per-IP bucket is for casual abuse on the web faucet form. The
