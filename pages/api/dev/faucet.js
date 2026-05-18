@@ -30,11 +30,24 @@ const FAUCET_TARGETS = (
   .map((s) => s.trim())
   .filter(Boolean);
 const DEFAULT_AMOUNT_WEI = (100n * 10n ** 18n).toString();    // 100 ASE
-// Cap = validator bond minimum + gas buffer. The installer + Operator
-// app request exactly 51,000 ASE so a freshly created key can bond and
-// pay a few txs of gas. The per-IP/per-recipient cooldowns below still
-// gate abuse (one 51K drip per IP per 60s = enforced spam ceiling).
-const MAX_AMOUNT_WEI = (51_000n * 10n ** 18n).toString();
+
+// Two-tier cap:
+//   - Web faucet (no token):  max 500 ASE   — generous casual use
+//   - Validator bootstrap:    max 51,000 ASE — bond + gas buffer
+//
+// The validator tier requires `X-Asentum-Faucet-Kind: validator` plus a
+// matching `X-Asentum-Faucet-Token` header. The token is shared with
+// the one-liner installer + the Operator app at build time. It is NOT
+// a real secret — anyone reverse-engineering the binary can read it —
+// but it raises the friction enough to stop drive-by frontend abuse
+// (which is what was happening: a request from the web page that just
+// happens to pass `amount` could otherwise drain the faucet 51K at a
+// time, gated only by the rate-limit cooldowns). The per-IP and
+// per-recipient cooldowns below still bound the worst case.
+const PUBLIC_MAX_AMOUNT_WEI    = (500n    * 10n ** 18n).toString();
+const VALIDATOR_MAX_AMOUNT_WEI = (51_000n * 10n ** 18n).toString();
+const VALIDATOR_FAUCET_TOKEN =
+  process.env.VALIDATOR_FAUCET_TOKEN || 'asentum-validator-2026';
 
 // Rate limits: 1 drip per IP per 60s, 1 drip per recipient per 5 min.
 // The per-IP bucket is for casual abuse on the web faucet form. The
@@ -108,13 +121,21 @@ export default async function handler(req, res) {
     return res.status(400).json({ accepted: false, reason: 'invalid `to` address' });
   }
 
-  // Amount: optional. Default 100 ASE (in wei). Capped at MAX_AMOUNT_WEI.
+  // Decide the cap based on request kind. Validator-tier requests must
+  // present both headers; web requests get the public cap.
+  const faucetKind = String(req.headers['x-asentum-faucet-kind'] || '').toLowerCase();
+  const faucetToken = String(req.headers['x-asentum-faucet-token'] || '');
+  const isValidatorTier =
+    faucetKind === 'validator' && faucetToken === VALIDATOR_FAUCET_TOKEN;
+  const capWei = isValidatorTier ? VALIDATOR_MAX_AMOUNT_WEI : PUBLIC_MAX_AMOUNT_WEI;
+
+  // Amount: optional. Default 100 ASE (in wei). Capped at the selected tier.
   let amountWei;
   if (typeof body.amount === 'string' && body.amount.length > 0) {
     try {
       const n = BigInt(body.amount);
       if (n <= 0n) throw new Error('non-positive');
-      const cap = BigInt(MAX_AMOUNT_WEI);
+      const cap = BigInt(capWei);
       amountWei = (n > cap ? cap : n).toString();
     } catch {
       return res.status(400).json({ accepted: false, reason: 'invalid `amount` (must be a positive wei string)' });
