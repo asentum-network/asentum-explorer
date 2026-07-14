@@ -1,24 +1,28 @@
-// asentum-explorer · Validators page. Reads the node's /validators
-// endpoint for membership + stake, and merges in proposer counts from
-// the local indexer's blocks table.
+import { hexToAse1 } from "../lib/format";
+// asentum-explorer · Validators page. Reads three live node endpoints:
+//   /validators         — full bonded set (stake, status, participation)
+//   /participation      — per-validator heartbeat over a sliding window
+//                         (signedBlocks, participationRatio, last seen)
+//   /consensus/state    — current scheduled proposer (height/round/proposer)
+//
+// Replaces the older "recent proposers via indexer" flow — those counts
+// were a proxy for liveness. Phase B's heartbeat data is the ground truth.
 //
 // milkie · 2026
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import Layout from '@/components/Layout';
-import { getValidators } from '@/lib/rpc';
+import { getValidators, getParticipation, getConsensusState } from '@/lib/rpc';
 import { shortHash, formatAse } from '@/lib/format';
 
 const ONE_ASE = 10n ** 18n;
-// Block production window for the "Recent" column. 10,000 blocks at 5s
-// each is roughly 13.9 hours of activity, enough to surface validators
-// that are producing now without including ancient history.
-const RECENT_WINDOW = 10000;
+// Heartbeat window. 200 blocks at ~4–5s = ~15 minutes — long enough for a
+// briefly-restarted validator not to look dormant, short enough that real
+// outages surface quickly.
+const HEARTBEAT_LOOKBACK = 200;
 
 function Stat({ label, value, sub, color, top, right }) {
-  // Plain CSS classes for top + right collide because both define
-  // background-image. Use the combined helper class when both are needed.
   let lineClass = '';
   if (top && right) lineClass = 'dash-t-and-r-desktop';
   else if (top) lineClass = 'dash-border-t';
@@ -41,9 +45,20 @@ function Stat({ label, value, sub, color, top, right }) {
   );
 }
 
+// Phase B liveness statuses ranked by health for sort ordering. signing is
+// the healthy state; idle = bonded, eligible, but no recent sign; dormant =
+// missed the entire window.
+const STATUS_STYLE = {
+  signing: { label: 'SIGNING', color: '#4ADE80', bg: '#0A1408', border: '#1A3A1A' },
+  idle:    { label: 'IDLE',    color: '#F29751', bg: '#231409', border: '#4A2911' },
+  dormant: { label: 'DORMANT', color: '#7D7D7D', bg: '#1A1A1A', border: '#2A2A2A' },
+};
+const STATUS_RANK = { signing: 0, idle: 1, dormant: 2, pending: 3 };
+
 export default function ValidatorsPage() {
   const [data, setData] = useState(null);
-  const [proposerStats, setProposerStats] = useState(null);
+  const [participation, setParticipation] = useState(null);
+  const [consensus, setConsensus] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -51,36 +66,51 @@ export default function ValidatorsPage() {
     let timer;
     const fetchOnce = async () => {
       try {
-        const v = await getValidators();
+        const [v, p, c] = await Promise.all([
+          getValidators(),
+          getParticipation(HEARTBEAT_LOOKBACK).catch(() => null),
+          getConsensusState().catch(() => null),
+        ]);
         if (cancelled) return;
         setData(v);
+        setParticipation(p);
+        setConsensus(c);
         setError(null);
       } catch (err) {
         if (!cancelled) setError(err.message);
       }
-      try {
-        const r = await fetch(`/api/indexer/validators/proposer-stats?window=${RECENT_WINDOW}`);
-        if (!r.ok) return;
-        const ps = await r.json();
-        if (!cancelled) setProposerStats(ps);
-      } catch { /* indexer optional */ }
     };
     fetchOnce();
-    timer = setInterval(fetchOnce, 10000);
+    timer = setInterval(fetchOnce, 5000);
     return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
-  // Derived membership stats.
   const validators = Array.isArray(data?.validators) ? data.validators : [];
   const total = data?.count ?? validators.length;
-  const activeCount = validators.filter((v) => (v.status || 'active') === 'active').length;
   let totalBondedWei = 0n;
   for (const v of validators) {
-    try { totalBondedWei += BigInt(v.stake || v.bondedStake || v.amount || '0'); } catch {}
+    try { totalBondedWei += BigInt(v.stake || '0'); } catch {}
   }
   const totalBondedAse = (totalBondedWei / ONE_ASE).toString();
-  const recentProposerCount = proposerStats?.recentProposerCount ?? null;
-  const perValidator = proposerStats?.perValidator || {};
+
+  // Heartbeat lookup keyed by address.
+  const partByAddr = {};
+  if (Array.isArray(participation?.validators)) {
+    for (const p of participation.validators) {
+      if (p.address) partByAddr[p.address.toLowerCase()] = p;
+    }
+  }
+  const signingCount = participation?.signing ?? null;
+  const idleCount = participation?.idle ?? null;
+  const dormantCount = participation?.dormant ?? null;
+  const heartbeatHead = participation?.head ? parseInt(participation.head, 10) : null;
+  const heartbeatFrom = participation?.scannedFrom ? parseInt(participation.scannedFrom, 10) : null;
+
+  // Currently-scheduled proposer (next-block leader from BFT engine).
+  const scheduledProposerHex = consensus?.proposer?.toLowerCase?.() || null;
+  const scheduledProposer = scheduledProposerHex ? hexToAse1(scheduledProposerHex) : null;
+  const consensusHeight = consensus?.height ? parseInt(consensus.height, 10) : null;
+  const consensusRound = consensus?.round ? parseInt(consensus.round, 10) : null;
 
   return (
     <Layout title="Validators">
@@ -88,7 +118,11 @@ export default function ValidatorsPage() {
         <div className="max-w-6xl mx-auto">
           <h1 className="font-plus text-[28px] md:text-[36px] font-bold text-white mb-2">Validators</h1>
           <p className="font-dm-mono text-[12px] text-[#7D7D7D]">
-            Active set rebuilt every block from on-chain bonded stake. Block-production counts below cover the last {RECENT_WINDOW.toLocaleString()} blocks (~{Math.round(RECENT_WINDOW * 5 / 3600)}h of chain activity).
+            Live Phase B heartbeat over the last {HEARTBEAT_LOOKBACK} blocks
+            {heartbeatFrom != null && heartbeatHead != null
+              ? <> (#{heartbeatFrom.toLocaleString()} → #{heartbeatHead.toLocaleString()})</>
+              : null}.
+            Status reflects who is actually signing — not just who is bonded.
           </p>
         </div>
       </section>
@@ -97,28 +131,29 @@ export default function ValidatorsPage() {
       <section className="dash-border-t">
         <div className="grid grid-cols-1 md:grid-cols-3">
           <Stat
-            label="Total validators"
-            value={total != null ? total : '—'}
-            sub="bonded into the staking contract"
-            right
-          />
-          <Stat
-            label="Active set"
-            value={activeCount}
-            sub={`${activeCount} of ${total} bonded`}
+            label="Signing"
+            value={signingCount != null ? signingCount : '—'}
+            sub={`active heartbeat in last ${HEARTBEAT_LOOKBACK} blocks`}
             color="#4ADE80"
             right
           />
           <Stat
-            label="Recent proposers"
-            value={recentProposerCount != null ? recentProposerCount : '—'}
-            sub={`last ${RECENT_WINDOW.toLocaleString()} blocks`}
-            color="#A6A6FF"
+            label="Idle"
+            value={idleCount != null ? idleCount : '—'}
+            sub="bonded · briefly silent"
+            color="#F29751"
+            right
+          />
+          <Stat
+            label="Dormant"
+            value={dormantCount != null ? dormantCount : '—'}
+            sub="bonded · no signatures in window"
+            color="#7D7D7D"
           />
           <Stat
             label="Total bonded"
-            value={`${Number(totalBondedAse).toLocaleString()}`}
-            sub="ASE locked across the set"
+            value={total != null ? total : '—'}
+            sub={`${Number(totalBondedAse).toLocaleString()} ASE in staking contract`}
             top
             right
           />
@@ -139,6 +174,26 @@ export default function ValidatorsPage() {
         </div>
       </section>
 
+      {/* Currently scheduled */}
+      {scheduledProposer && (
+        <section className="dash-border-t px-[4%] py-6">
+          <div className="max-w-6xl mx-auto flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+              <p className="font-dm-mono text-[10px] uppercase tracking-[0.15em] text-[#5A5A5A] mb-1">Currently proposing</p>
+              <Link
+                href={`/address/${scheduledProposer}`}
+                className="font-dm-mono text-[14px] text-[#A6A6FF] hover:text-white"
+              >
+                {scheduledProposer}
+              </Link>
+            </div>
+            <div className="font-dm-mono text-[11px] text-[#7D7D7D] tabular-nums">
+              h={consensusHeight ?? '—'} · r={consensusRound ?? '—'} · phase={consensus?.phase || '—'}
+            </div>
+          </div>
+        </section>
+      )}
+
       {error && (
         <section className="dash-border-t px-[4%] py-4">
           <p className="font-dm-mono text-[12px] text-[#F87171]">{error}</p>
@@ -157,10 +212,9 @@ export default function ValidatorsPage() {
                   <th className="text-left px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]">Address</th>
                   <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]">Bonded</th>
                   <th className="text-left px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]">Status</th>
-                  <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]">Blocks total</th>
-                  <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]" title={`Blocks proposed in the last ${RECENT_WINDOW.toLocaleString()} blocks`}>Recent ({RECENT_WINDOW >= 1000 ? `${RECENT_WINDOW / 1000}k` : RECENT_WINDOW})</th>
+                  <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]" title="Share of the last 200 blocks this validator signed">Participation</th>
+                  <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]" title="Last block the validator's signature appeared in">Last seen</th>
                   <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]">Bonded at</th>
-                  <th className="text-right px-4 py-3 font-dm-mono text-[10px] uppercase tracking-[0.1em] text-[#7D7D7D]">Pubkey size</th>
                 </tr>
               </thead>
               <tbody>
@@ -170,22 +224,33 @@ export default function ValidatorsPage() {
                 {validators
                   .slice()
                   .sort((a, b) => {
-                    const pa = perValidator[a.address?.toLowerCase()]?.recentBlocks || 0;
-                    const pb = perValidator[b.address?.toLowerCase()]?.recentBlocks || 0;
-                    if (pa !== pb) return pb - pa;
+                    const sa = partByAddr[a.address?.toLowerCase()]?.status || 'pending';
+                    const sb = partByAddr[b.address?.toLowerCase()]?.status || 'pending';
+                    const ra = STATUS_RANK[sa] ?? 99;
+                    const rb = STATUS_RANK[sb] ?? 99;
+                    if (ra !== rb) return ra - rb;
                     try { return BigInt(b.stake || '0') > BigInt(a.stake || '0') ? 1 : -1; } catch { return 0; }
                   })
                   .map((v, i) => {
                     const addr = (v.address || '').toLowerCase();
                     const stake = v.stake || '0';
-                    const isActive = (v.status || 'active') === 'active';
-                    const stats = perValidator[addr];
-                    const recent = stats?.recentBlocks ?? 0;
-                    const totalBlocks = stats?.totalBlocks ?? 0;
-                    const isRecentlyActive = recent > 0;
+                    const p = partByAddr[addr];
+                    const status = p?.status || 'pending';
+                    const style = STATUS_STYLE[status] || STATUS_STYLE.dormant;
+                    const ratio = typeof p?.participationRatio === 'number' ? p.participationRatio : null;
+                    const lastSigned = p?.lastSignedBlock ? parseInt(p.lastSignedBlock, 10) : null;
+                    const blocksSince = (lastSigned != null && heartbeatHead != null) ? heartbeatHead - lastSigned : null;
+                    const isScheduled = scheduledProposer && addr === scheduledProposer;
                     return (
-                      <tr key={addr || i} className="border-b border-[#1A1A1A] hover:bg-[#0F0F0F]">
-                        <td className="px-4 py-3 font-dm-mono text-[#5A5A5A] tabular-nums">{i + 1}</td>
+                      <tr
+                        key={addr || i}
+                        className="border-b border-[#1A1A1A] hover:bg-[#0F0F0F]"
+                        style={isScheduled ? { backgroundColor: '#080A14' } : null}
+                      >
+                        <td className="px-4 py-3 font-dm-mono text-[#5A5A5A] tabular-nums">
+                          {i + 1}
+                          {isScheduled && <span className="ml-2 text-[#A6A6FF]" title="Currently scheduled proposer">●</span>}
+                        </td>
                         <td className="px-4 py-3">
                           {addr ? (
                             <Link href={`/address/${addr}`} className="font-dm-mono text-[#A6A6FF] hover:text-white">
@@ -199,28 +264,29 @@ export default function ValidatorsPage() {
                         <td className="px-4 py-3">
                           <span
                             className="inline-block font-dm-mono text-[10px] tracking-[0.1em] uppercase px-2 py-1"
-                            style={
-                              isRecentlyActive
-                                ? { color: '#4ADE80', backgroundColor: '#0A1408', border: '1px solid #1A3A1A' }
-                                : isActive
-                                ? { color: '#F29751', backgroundColor: '#231409', border: '1px solid #4A2911' }
-                                : { color: '#7D7D7D', backgroundColor: '#1A1A1A', border: '1px solid #2A2A2A' }
-                            }
+                            style={{ color: style.color, backgroundColor: style.bg, border: `1px solid ${style.border}` }}
                           >
-                            {isRecentlyActive ? 'Proposing' : isActive ? 'Bonded' : v.status || 'Idle'}
+                            {p ? style.label : (v.status || 'PENDING').toUpperCase()}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-right font-dm-mono text-[#CACACA] tabular-nums">
-                          {totalBlocks.toLocaleString()}
+                        <td className="px-4 py-3 text-right font-dm-mono tabular-nums" style={{ color: ratio == null ? '#5A5A5A' : ratio >= 0.9 ? '#4ADE80' : ratio >= 0.5 ? '#F29751' : '#7D7D7D' }}>
+                          {ratio == null ? '—' : `${(ratio * 100).toFixed(0)}%`}
+                          {p?.signedBlocks != null && (
+                            <span className="text-[#5A5A5A] ml-1">({p.signedBlocks}/{HEARTBEAT_LOOKBACK})</span>
+                          )}
                         </td>
-                        <td className="px-4 py-3 text-right font-dm-mono tabular-nums" style={{ color: recent > 0 ? '#4ADE80' : '#5A5A5A' }}>
-                          {recent}
+                        <td className="px-4 py-3 text-right font-dm-mono text-[#CACACA] tabular-nums">
+                          {lastSigned != null ? (
+                            <>
+                              #{lastSigned.toLocaleString()}
+                              {blocksSince != null && blocksSince > 0 && (
+                                <span className="text-[#5A5A5A] ml-1">(−{blocksSince})</span>
+                              )}
+                            </>
+                          ) : '—'}
                         </td>
                         <td className="px-4 py-3 text-right font-dm-mono text-[#7D7D7D] tabular-nums">
                           {v.bondedAt ? `#${parseInt(v.bondedAt, 10).toLocaleString()}` : '—'}
-                        </td>
-                        <td className="px-4 py-3 text-right font-dm-mono text-[#7D7D7D] tabular-nums" title="ML-DSA-65 public key">
-                          {v.pubKeySize ? `${v.pubKeySize.toLocaleString()} B` : '—'}
                         </td>
                       </tr>
                     );
