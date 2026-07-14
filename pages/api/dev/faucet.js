@@ -172,9 +172,21 @@ export default async function handler(req, res) {
     });
   }
 
+  // Snapshot balance before drip so we can verify the tx actually lands.
+  // Validators occasionally return accepted:true with a hash that never
+  // mines (stale local nonce); we don't want that to burn the user's
+  // address rate-limit slot. So: forward → poll balance → only commit
+  // the bucket once we see funds increase.
+  let balanceBefore = 0n;
+  try {
+    const b = await fetch(`${FAUCET_TARGETS[0]}/balance/${to}`).then(r => r.json());
+    balanceBefore = BigInt(b.balance || '0');
+  } catch { /* if we can't read balance, fall through and trust the validator */ }
+
   // Forward to the upstream faucet, falling through the validator list on
-  // transient failures (network / "duplicate or mempool full" / bad JSON).
-  // Try targets in a rotated order so we don't always hammer the first one.
+  // transient failures (network / "duplicate or mempool full" / bad JSON
+  // / accepted-but-never-landed). Try targets in a rotated order so we
+  // don't always hammer the first one.
   const rotated = [
     ...FAUCET_TARGETS.slice(rotateOffset() % FAUCET_TARGETS.length),
     ...FAUCET_TARGETS.slice(0, rotateOffset() % FAUCET_TARGETS.length),
@@ -197,7 +209,14 @@ export default async function handler(req, res) {
     let body;
     try { body = await upstream.json(); }
     catch { lastReason = `non-JSON from ${target} (status ${upstream.status})`; lastStatus = 502; continue; }
-    if (body?.accepted === true) { data = body; break; }
+    if (body?.accepted === true) {
+      // Verify the drip actually lands on-chain. Block time is ~5s, so
+      // give it up to ~14s — covers two block windows plus some slack.
+      const landed = await waitForBalanceIncrease(to, balanceBefore, 14_000);
+      if (landed) { data = body; break; }
+      lastReason = `${target}: accepted but did not land (validator nonce skew?)`;
+      continue;
+    }
     // Retryable validator-side rejections: "duplicate or mempool full"
     // or anything else that's clearly the validator's fault.
     const reason = String(body?.reason || '');
@@ -212,6 +231,9 @@ export default async function handler(req, res) {
   }
 
   if (!data) {
+    // Nothing actually landed — refund the rate-limit slots so the
+    // user can retry immediately rather than being stuck for 5 min
+    // on a drip they never received.
     if (!trusted) rollbackBucket(ipLastDrip, ip, ipPrev);
     rollbackBucket(addrLastDrip, to, addrPrev);
     return res.status(lastStatus).json({
@@ -225,4 +247,20 @@ export default async function handler(req, res) {
     txHash: data.txHash,
     amountWei,
   });
+}
+
+// Poll the address balance until it exceeds the pre-drip snapshot, or
+// the timeout expires. Returns true if funds landed.
+async function waitForBalanceIncrease(addr, before, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 1500));
+    for (const target of FAUCET_TARGETS) {
+      try {
+        const b = await fetch(`${target}/balance/${addr}`).then(r => r.json());
+        if (BigInt(b.balance || '0') > before) return true;
+      } catch { /* try next target */ }
+    }
+  }
+  return false;
 }

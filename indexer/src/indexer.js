@@ -74,6 +74,17 @@ export async function runIndexer({ db, rpc, batchSize = 25, pollMs = 3000, start
         break;
       }
 
+      // Belt-and-suspenders alignment check: the rpc.batch fix returns
+      // positional null on dropped entries, but a buggy upstream RPC
+      // could also return the wrong block in the wrong slot. Verify
+      // block.number matches expectedBlockNum; on mismatch, abort the
+      // batch and let the next tick refetch from the correct height.
+      const actualBlockNum = parseInt(block.number, 16);
+      if (actualBlockNum !== expectedBlockNum) {
+        console.error(`[indexer] block alignment mismatch: expected ${expectedBlockNum}, got ${actualBlockNum}; aborting batch`);
+        break;
+      }
+
       // Fetch receipts. gasUsed + status come from the receipt, not the tx body.
       const txs = block.transactions || [];
       let receiptsByHash = {};
